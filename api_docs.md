@@ -42,11 +42,50 @@ Response:
 ```json
 {
   "playlist_url": "/hls/8f2c1a9e4b7d6350/playlist.m3u8",
+  "qualities": [
+    {"label": "1080p", "path": "/hls/8f2c1a9e4b7d6350/1080p/index.m3u8", "resolution": "1920x1080", "bandwidth": 5000000, "height": 1080},
+    {"label": "720p", "path": "/hls/8f2c1a9e4b7d6350/720p/index.m3u8", "resolution": "1280x720", "bandwidth": 2500000, "height": 720},
+    {"label": "480p", "path": "/hls/8f2c1a9e4b7d6350/480p/index.m3u8", "resolution": "854x480", "bandwidth": 1200000, "height": 480}
+  ],
   "session_id": "8f2c1a9e4b7d6350",
   "title": "Mushen Ji",
   "episode": 2,
   "lang": "Sound Track",
   "expires_in": 7200
+}
+```
+
+`qualities` เรียงจากความชัดสูงสุดไปต่ำสุด และ `playlist_url` เป็น master playlist
+ที่รวมทุกความชัดไว้ ทำให้ player ปรับความชัดเองได้ (adaptive bitrate)
+
+## เลือกความชัด (quality)
+
+```http
+GET /hls/{id}/{ความชัด}/index.m3u8
+```
+
+ตัวอย่าง:
+
+```http
+GET /hls/{id}/1080p/index.m3u8   # ล็อกที่ 1080p
+GET /hls/{id}/720p/index.m3u8    # ล็อกที่ 720p
+GET /hls/{id}/480p/index.m3u8    # ล็อกที่ 480p
+GET /hls/{id}/auto/index.m3u8    # master playlist (ปรับอัตโนมัติ)
+GET /hls/{id}/qualities.json     # รายการความชัดของ session นี้
+```
+
+`{ความชัด}` คือค่า `label` จาก `qualities` (ปกติเป็น `1080p`, `720p`, `480p` ...)
+ถ้า upstream ไม่ได้ระบุ RESOLUTION จะ fallback เป็น bitrate เช่น `2500k`
+ถ้าไม่มีความชัดที่ขอจะตอบ `404`
+
+`qualities.json` ตอบ:
+
+```json
+{
+  "session_id": "8f2c1a9e4b7d6350",
+  "qualities": [
+    {"label": "1080p", "path": "1080p/index.m3u8", "resolution": "1920x1080", "bandwidth": 5000000, "height": 1080}
+  ]
 }
 ```
 
@@ -56,8 +95,9 @@ Response:
 CDN และ `Content-Type` ทำงานได้ถูกต้อง
 
 ```http
-GET /hls/{id}/playlist.m3u8      # entry playlist
-GET /hls/{id}/index-1.m3u8       # media playlist ของแต่ละ variant
+GET /hls/{id}/playlist.m3u8      # master playlist (ทุกความชัด)
+GET /hls/{id}/1080p/index.m3u8   # media playlist ของความชัดที่เลือก
+GET /hls/{id}/index-1.m3u8       # media playlist ภายใน (ชื่อ opaque)
 GET /hls/{id}/segment-12.ts      # video segment
 GET /hls/{id}/key-3.key          # AES-128 key
 GET /hls/{id}/init-2.mp4         # fMP4 initialization section
@@ -70,6 +110,7 @@ Server จะ rewrite ทุก URI ภายใน playlist ให้เป็�
 Proxy รองรับ:
 
 - Master และ media playlists (`#EXT-X-STREAM-INF`)
+- เลือกความชัดผ่าน path `/hls/{id}/{ความชัด}/index.m3u8` และ `auto` สำหรับ adaptive
 - MPEG-TS และ fMP4 segments
 - `EXT-X-KEY`, `EXT-X-SESSION-KEY`, `EXT-X-MAP`, `EXT-X-PART` และ URI attributes อื่น
 - Relative และ absolute upstream URLs

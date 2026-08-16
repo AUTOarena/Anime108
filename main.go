@@ -133,18 +133,33 @@ func (s *Server) resolveStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	streamURL, err := scraper.ResolveStreamURL(r.Context(), iframeURL)
+	info, err := scraper.ResolveStreamVariants(r.Context(), iframeURL)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	sessionID, err := s.proxy.CreateSession(streamURL, iframeURL)
+	sources := make([]VariantSource, 0, len(info.Variants))
+	for _, variant := range info.Variants {
+		sources = append(sources, VariantSource{
+			Label:      variant.Label,
+			Resolution: variant.Resolution,
+			Bandwidth:  variant.Bandwidth,
+			Height:     variant.Height,
+			URL:        variant.URL,
+		})
+	}
+	sessionID, err := s.proxy.CreateSessionWithVariants(info.MasterURL, iframeURL, sources)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
+	qualities := s.proxy.Qualities(sessionID)
+	for index := range qualities {
+		qualities[index].Path = "/hls/" + sessionID + "/" + qualities[index].Label + "/" + variantPlaylistName
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"playlist_url": s.proxy.PlaylistPath(sessionID),
+		"qualities":    qualities,
 		"session_id":   sessionID,
 		"title":        metadata.Title,
 		"episode":      metadata.Episode,

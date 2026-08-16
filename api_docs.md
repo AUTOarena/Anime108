@@ -41,7 +41,8 @@ Response:
 
 ```json
 {
-  "playlist_url": "/hls/temporary-token",
+  "playlist_url": "/hls/8f2c1a9e4b7d6350/playlist.m3u8",
+  "session_id": "8f2c1a9e4b7d6350",
   "title": "Mushen Ji",
   "episode": 2,
   "lang": "Sound Track",
@@ -51,17 +52,46 @@ Response:
 
 ## Stream a proxied HLS resource
 
+ทุก resource ของ session อยู่ใต้ `/hls/{id}/` และมีนามสกุลไฟล์จริง ทำให้ player,
+CDN และ `Content-Type` ทำงานได้ถูกต้อง
+
 ```http
-GET /hls/{token}
+GET /hls/{id}/playlist.m3u8      # entry playlist
+GET /hls/{id}/index-1.m3u8       # media playlist ของแต่ละ variant
+GET /hls/{id}/segment-12.ts      # video segment
+GET /hls/{id}/key-3.key          # AES-128 key
+GET /hls/{id}/init-2.mp4         # fMP4 initialization section
 Range: bytes=0-1048575
 ```
 
-`playlist_url` และ URI ที่ถูก rewrite ภายใน playlist ใช้ endpoint นี้ทั้งหมด Proxy รองรับ:
+Server จะ rewrite ทุก URI ภายใน playlist ให้เป็นชื่อไฟล์แบบ relative ของ session เดียวกัน
+เช่น `segment-12.ts` ดังนั้น player จะ resolve เป็น `/hls/{id}/segment-12.ts` เองอัตโนมัติ
 
-- Master และ media playlists
-- MPEG-TS/fMP4 segments
-- `EXT-X-KEY` และ URI attributes
+Proxy รองรับ:
+
+- Master และ media playlists (`#EXT-X-STREAM-INF`)
+- MPEG-TS และ fMP4 segments
+- `EXT-X-KEY`, `EXT-X-SESSION-KEY`, `EXT-X-MAP`, `EXT-X-PART` และ URI attributes อื่น
 - Relative และ absolute upstream URLs
-- HTTP Range requests
+- HTTP Range requests (ตอบ `206` พร้อม `Content-Range`)
+- CORS preflight (`OPTIONS`) และ `HEAD`
+- Live playlist: reload แล้วชื่อไฟล์เดิมคงที่ ไม่สร้าง entry ซ้ำ
 
-Token เป็นค่า opaque, ไม่เปิดเผย upstream URL และมีอายุ 2 ชั่วโมง เมื่อหมดอายุจะตอบ `410 Gone`
+| Status | ความหมาย |
+| --- | --- |
+| `200` / `206` | สำเร็จ (206 เมื่อมี Range) |
+| `404` | ไม่พบ resource นี้ใน session (หรือ path ผิดรูปแบบ) |
+| `405` | method ไม่รองรับ (มี header `Allow`) |
+| `410` | session หมดอายุหรือไม่มีอยู่ |
+| `502` | upstream ผิดพลาด |
+
+`id` เป็นค่า opaque แบบสุ่ม ไม่เปิดเผย upstream URL และมีอายุ 2 ชั่วโมงนับจากการใช้งานครั้งล่าสุด
+(ทุก request จะต่ออายุให้อัตโนมัติ) เมื่อหมดอายุจะตอบ `410 Gone`
+
+## Error response
+
+ทุก endpoint ตอบ error ในรูปแบบเดียวกัน:
+
+```json
+{"error": "HLS session expired or was not found"}
+```

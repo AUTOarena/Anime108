@@ -10,11 +10,18 @@ Content-Type: application/json
   "url": "https://www.anime108.com/mushen-ji-ep-2/",
   "lang": "Sound Track"
 }</pre><p>Response:</p><pre>{
-  "playlist_url": "/hls/temporary-token",
+  "playlist_url": "/hls/8f2c1a9e4b7d6350/playlist.m3u8",
+  "session_id": "8f2c1a9e4b7d6350",
   "title": "Mushen Ji",
   "episode": 2,
   "lang": "Sound Track",
   "expires_in": 7200
 }</pre></section>
-<section class="card"><h2><span class="method get">GET</span>/hls/{token}</h2><p>ส่ง playlist, segment, encryption key และ HLS resource อื่นแบบ streaming โดย server จะ rewrite URI ภายใน playlist ให้ผ่าน proxy อัตโนมัติ Token ไม่เปิดเผย upstream URL และหมดอายุภายในเวลาที่กำหนด</p><pre>&lt;video&gt; / hls.js → /hls/{token} → upstream HLS</pre></section>
+<section class="card"><h2><span class="method get">GET</span>/hls/{id}/{file}</h2><p>ทุก resource ของ session อยู่ใต้ <code>/hls/{id}/</code> และมีนามสกุลไฟล์จริง ทำให้ player, CDN และ <code>Content-Type</code> ทำงานถูกต้อง Server จะ rewrite URI ภายใน playlist ให้เป็นชื่อไฟล์ relative ของ session เดียวกันอัตโนมัติ</p><pre>GET /hls/{id}/playlist.m3u8   # entry playlist
+GET /hls/{id}/index-1.m3u8    # media playlist ของแต่ละ variant
+GET /hls/{id}/segment-12.ts   # video segment
+GET /hls/{id}/key-3.key       # AES-128 key
+GET /hls/{id}/init-2.mp4      # fMP4 init section
+Range: bytes=0-1048575</pre><p>รองรับ Range request (ตอบ <code>206</code> พร้อม <code>Content-Range</code>), <code>HEAD</code>, CORS preflight <code>OPTIONS</code> และ live playlist ที่ reload แล้วชื่อไฟล์คงเดิม</p><p class="muted"><code>404</code> ไม่พบ resource ใน session · <code>405</code> method ไม่รองรับ · <code>410</code> session หมดอายุ · <code>502</code> upstream ผิดพลาด</p><pre>&lt;video&gt; / hls.js → /hls/{id}/playlist.m3u8 → upstream HLS</pre></section>
+<section class="card"><h2>Error response</h2><p>ทุก endpoint ตอบ error ในรูปแบบเดียวกัน</p><pre>{"error": "HLS session expired or was not found"}</pre></section>
 </main></body></html>

@@ -1,6 +1,6 @@
 # Anime108 Scraper Backend API Documentation
 
-This document describes the JSON API endpoints exposed by the Flask application (`app.py`).
+This document describes the JSON API endpoints exposed by the Go server (`main.go`).
 
 Default Base URL: `http://localhost:5000`
 

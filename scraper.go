@@ -1,24 +1,16 @@
 package main
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"html"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"time"
 )
 
@@ -47,15 +39,6 @@ type SearchResult struct {
 	Image        string `json:"image"`
 	EpisodesInfo string `json:"episodes_info"`
 }
-
-type DownloadResult struct {
-	Success  bool     `json:"success"`
-	Filepath string   `json:"filepath,omitempty"`
-	Metadata Metadata `json:"metadata"`
-	StreamURL string   `json:"stream_url,omitempty"`
-}
-
-type ProgressFunc func(status string, current, total int, message string)
 
 type Scraper struct {
 	client *http.Client
@@ -297,185 +280,6 @@ func (s *Scraper) ResolveStreamURL(ctx context.Context, iframeURL string) (strin
 		}
 	}
 	return "", fmt.Errorf("failed to fetch a valid stream playlist: HTTP %d", status)
-}
-
-func (s *Scraper) GetSegments(ctx context.Context, streamURL, iframeURL string) ([]string, error) {
-	content, status, err := s.fetchText(ctx, streamURL, iframeURL, "")
-	if err != nil {
-		return nil, err
-	}
-	if status != http.StatusOK {
-		return nil, fmt.Errorf("stream playlist returned HTTP %d", status)
-	}
-	base, _ := url.Parse(streamURL)
-	segments := []string{}
-	for _, raw := range strings.Split(content, "\n") {
-		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		reference, err := url.Parse(line)
-		if err == nil {
-			segments = append(segments, base.ResolveReference(reference).String())
-		}
-	}
-	return segments, nil
-}
-
-func (s *Scraper) downloadSegment(ctx context.Context, target string, index int, tempDir, iframeURL string, retries int) (string, error) {
-	path := filepath.Join(tempDir, fmt.Sprintf("%05d.aaa", index))
-	if info, err := os.Stat(path); err == nil && info.Size() > 0 {
-		return path, nil
-	}
-	var lastErr error
-	for attempt := 0; attempt < retries; attempt++ {
-		resp, err := s.request(ctx, http.MethodGet, target, nil, map[string]string{"Referer": iframeURL})
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		data, err := responseBytes(resp)
-		if err == nil {
-			err = os.WriteFile(path, data, 0o644)
-		}
-		if err == nil {
-			return path, nil
-		}
-		lastErr = err
-	}
-	return "", lastErr
-}
-
-func mergeSegments(files []string, outputPath string) error {
-	tempPath := outputPath + ".temp.ts"
-	output, err := os.Create(tempPath)
-	if err != nil {
-		return err
-	}
-	writer := bufio.NewWriter(output)
-	for _, path := range files {
-		input, openErr := os.Open(path)
-		if openErr != nil {
-			output.Close()
-			return openErr
-		}
-		_, copyErr := io.Copy(writer, input)
-		input.Close()
-		if copyErr != nil {
-			output.Close()
-			return copyErr
-		}
-	}
-	if err = writer.Flush(); err != nil {
-		output.Close()
-		return err
-	}
-	if err = output.Close(); err != nil {
-		return err
-	}
-	if _, err = exec.LookPath("ffmpeg"); err == nil {
-		cmd := exec.Command("ffmpeg", "-y", "-i", tempPath, "-c", "copy", outputPath)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
-		if runErr := cmd.Run(); runErr == nil {
-			return os.Remove(tempPath)
-		} else {
-			fmt.Printf("FFmpeg failed, preserving concatenated stream: %s\n", stderr.String())
-		}
-	}
-	_ = os.Remove(outputPath)
-	return os.Rename(tempPath, outputPath)
-}
-
-func (s *Scraper) DownloadVideo(ctx context.Context, episodeURL, outputDir, lang string, concurrency int, checkOnly bool, progress ProgressFunc) (DownloadResult, error) {
-	if concurrency < 1 {
-		concurrency = 1
-	}
-	if err := os.MkdirAll(outputDir, 0o755); err != nil {
-		return DownloadResult{}, err
-	}
-	document, err := s.GetPageContent(ctx, episodeURL)
-	if err != nil {
-		return DownloadResult{}, err
-	}
-	metadata, err := s.ParseShowPage(document, episodeURL)
-	if err != nil {
-		return DownloadResult{}, err
-	}
-	if metadata.PostID == 0 {
-		return DownloadResult{}, errors.New("could not find post ID on the page")
-	}
-	iframeURL, err := s.GetPlayerIframe(ctx, metadata.PostID, metadata.Episode, metadata.Server, lang, metadata.Title)
-	if err != nil {
-		return DownloadResult{}, err
-	}
-	streamURL, err := s.ResolveStreamURL(ctx, iframeURL)
-	if err != nil {
-		return DownloadResult{}, err
-	}
-	if checkOnly {
-		return DownloadResult{Success: true, Metadata: metadata, StreamURL: streamURL}, nil
-	}
-	segments, err := s.GetSegments(ctx, streamURL, iframeURL)
-	if err != nil {
-		return DownloadResult{}, err
-	}
-	if len(segments) == 0 {
-		return DownloadResult{}, errors.New("no segments found in playlist")
-	}
-	tempDir := filepath.Join(outputDir, fmt.Sprintf("temp_%d_ep%d_%s", metadata.PostID, metadata.Episode, strings.ReplaceAll(lang, " ", "")))
-	if err := os.MkdirAll(tempDir, 0o755); err != nil {
-		return DownloadResult{}, err
-	}
-	files := make([]string, len(segments))
-	jobs := make(chan int)
-	var completed atomic.Int64
-	var wg sync.WaitGroup
-	for worker := 0; worker < concurrency; worker++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for index := range jobs {
-				path, downloadErr := s.downloadSegment(ctx, segments[index], index, tempDir, iframeURL, 3)
-				if downloadErr == nil {
-					files[index] = path
-				}
-				current := int(completed.Add(1))
-				if progress != nil {
-					progress("downloading", current, len(segments), fmt.Sprintf("Downloading chunk %d/%d", current, len(segments)))
-				}
-			}
-		}()
-	}
-	for index := range segments {
-		jobs <- index
-	}
-	close(jobs)
-	wg.Wait()
-	for index, path := range files {
-		if path == "" {
-			files[index], err = s.downloadSegment(ctx, segments[index], index, tempDir, iframeURL, 5)
-			if err != nil {
-				return DownloadResult{}, fmt.Errorf("segment %d could not be downloaded: %w", index, err)
-			}
-		}
-	}
-	outputName := fmt.Sprintf("%s - Ep %d (%s).mp4", metadata.CleanTitle, metadata.Episode, lang)
-	outputPath := filepath.Join(outputDir, outputName)
-	if progress != nil {
-		progress("merging", len(files), len(files), "Merging segments into output MP4 file...")
-	}
-	if err := mergeSegments(files, outputPath); err != nil {
-		return DownloadResult{}, err
-	}
-	for _, path := range files {
-		_ = os.Remove(path)
-	}
-	_ = os.Remove(tempDir)
-	if progress != nil {
-		progress("completed", len(files), len(files), "Saved final MP4 to: "+outputPath)
-	}
-	return DownloadResult{Success: true, Filepath: outputPath, Metadata: metadata}, nil
 }
 
 func balancedDivBlocks(document, className string) []string {

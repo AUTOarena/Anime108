@@ -1,49 +1,45 @@
-# Anime108 Downloader (Go)
+# Anime108 HLS Proxy (Go)
 
-Anime108 scraper, stream resolver และตัวดาวน์โหลดวิดีโอที่เขียนด้วย Go ล้วน พร้อม Web UI, JSON API และ CLI ในไบนารีเดียว
+HLS streaming proxy สำหรับ Anime108 เขียนด้วย Go พร้อม Web player และ JSON API โดย **ไม่มีระบบดาวน์โหลดและไม่บันทึกไฟล์วิดีโอลงดิสก์**
 
-## Requirements
+## ความสามารถ
 
-- Go 1.22 ขึ้นไป
-- FFmpeg (แนะนำ เพื่อ remux MPEG-TS เป็น MP4 อย่างถูกต้อง)
+- ค้นหาเรื่องและอ่านรายการตอน
+- Resolve upstream HLS stream
+- Proxy playlist, video segments, encryption keys และ HLS resources
+- Rewrite URI ภายใน M3U8 ให้ผ่าน proxy อัตโนมัติ
+- ใช้ opaque token จึงไม่เปิดเผย upstream URL กับ client
+- Session หมดอายุอัตโนมัติภายใน 2 ชั่วโมง
+- รองรับ HTTP Range สำหรับ video segments
 
-## เริ่ม Web UI
+## เริ่มใช้งาน
+
+ต้องใช้ Go 1.22 ขึ้นไป:
 
 ```bash
 go run .
 ```
 
-จากนั้นเปิด <http://localhost:5000>
+เปิด <http://localhost:5000>
 
-กำหนดพอร์ตหรือโฟลเดอร์ดาวน์โหลดได้:
-
-```bash
-go run . -port 8080 -dir ./downloads
-```
-
-## ใช้งานผ่าน CLI
+กำหนดพอร์ต:
 
 ```bash
-go run . \
-  -url "https://www.anime108.com/mushen-ji-ep-2/" \
-  -lang "Sound Track" \
-  -threads 16 \
-  -dir ./downloads
+go run . -port 8080
 ```
-
-ตรวจสอบว่า playlist ใช้งานได้โดยไม่ดาวน์โหลด:
-
-```bash
-go run . -url "https://www.anime108.com/mushen-ji-ep-2/" -check-only
-```
-
-`-lang` รองรับ `Sound Track` (ซับไทย) และ `Thai` (พากย์ไทย)
 
 ## Build
 
 ```bash
 go build -o anime108 .
 ./anime108
+```
+
+## Docker
+
+```bash
+docker build -t anime108-hls .
+docker run --rm -p 5000:5000 anime108-hls
 ```
 
 ## Test
@@ -55,4 +51,9 @@ go test -race ./...
 
 ## API
 
-เมื่อ server ทำงาน สามารถเปิดเอกสารแบบ interactive ที่ <http://localhost:5000/docs> หรืออ่าน [api_docs.md](api_docs.md)
+- `GET /search?q=...` — ค้นหาอนิเมะ
+- `POST /api/parse` — อ่าน metadata และรายการตอน
+- `POST /api/stream` — สร้าง HLS proxy session
+- `GET /hls/{token}` — รับ playlist/segment/key ผ่าน proxy
+
+ดูรายละเอียดที่ <http://localhost:5000/docs> หรือ [api_docs.md](api_docs.md)

@@ -10,11 +10,12 @@ Content-Type: application/json
   "url": "https://www.anime108.com/mushen-ji-ep-2/",
   "lang": "Sound Track"
 }</pre><p>Response:</p><pre>{
-  "playlist_url": "/hls/temporary-token",
+  "playlist_url": "/hls/temporary-token/master.m3u8",
   "title": "Mushen Ji",
   "episode": 2,
   "lang": "Sound Track",
   "expires_in": 7200
 }</pre></section>
-<section class="card"><h2><span class="method get">GET</span>/hls/{token}</h2><p>ส่ง playlist, segment, encryption key และ HLS resource อื่นแบบ streaming โดย server จะ rewrite URI ภายใน playlist ให้ผ่าน proxy อัตโนมัติ Token ไม่เปิดเผย upstream URL และหมดอายุภายในเวลาที่กำหนด</p><pre>&lt;video&gt; / hls.js → /hls/{token} → upstream HLS</pre></section>
+<section class="card"><h2><span class="method get">GET</span>/hls/{id}/master.m3u8</h2><p>ส่ง master playlist ที่มีทุกความชัดเพื่อให้ HLS player เลือกแบบ adaptive bitrate โดย URI ของแต่ละความชัดจะถูก rewrite เป็น path ที่อ่านง่าย</p><pre>/hls/{id}/720p/index.m3u8
+/hls/{id}/1080p/index.m3u8</pre><p>Segment, encryption key และ HLS resource อื่นจะผ่าน opaque token <code>/hls/{token}</code> โดยอัตโนมัติ และ session หมดอายุภายในเวลาที่กำหนด</p></section>
 </main></body></html>

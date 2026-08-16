@@ -54,6 +54,8 @@ go test -race ./...
 - `GET /search?q=...` — ค้นหาอนิเมะ
 - `POST /api/parse` — อ่าน metadata และรายการตอน
 - `POST /api/stream` — สร้าง HLS proxy session
-- `GET /hls/{token}` — รับ playlist/segment/key ผ่าน proxy
+- `GET /hls/{id}/master.m3u8` — รับ master playlist สำหรับปรับความชัดอัตโนมัติ
+- `GET /hls/{id}/{quality}/index.m3u8` — รับ playlist ของความชัดที่เลือก เช่น `720p`
+- `GET /hls/{token}` — รับ segment/key และรองรับ playlist URL รูปแบบเดิม
 
 ดูรายละเอียดที่ <http://localhost:5000/docs> หรือ [api_docs.md](api_docs.md)

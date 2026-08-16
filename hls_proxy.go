@@ -26,6 +26,10 @@ type HLSProxy struct {
 	mu        sync.RWMutex
 	resources map[string]proxyResource
 	byTarget  map[string]string
+	// variants maps "{master token}/{quality}" to the opaque token for that
+	// variant playlist. It gives clients stable, readable quality URLs without
+	// exposing an upstream URL.
+	variants map[string]string
 }
 
 func NewHLSProxy(ttl time.Duration) *HLSProxy {
@@ -34,6 +38,7 @@ func NewHLSProxy(ttl time.Duration) *HLSProxy {
 		ttl:       ttl,
 		resources: make(map[string]proxyResource),
 		byTarget:  make(map[string]string),
+		variants:  make(map[string]string),
 	}
 }
 
@@ -50,6 +55,20 @@ func validUpstream(rawURL string) bool {
 	return err == nil && (parsed.Scheme == "https" || parsed.Scheme == "http") && parsed.Host != ""
 }
 
+func (p *HLSProxy) cleanupLocked(now time.Time) {
+	for key, resource := range p.resources {
+		if now.After(resource.ExpiresAt) {
+			delete(p.resources, key)
+			delete(p.byTarget, resource.URL+"\x00"+resource.Referer)
+		}
+	}
+	for key, token := range p.variants {
+		if _, found := p.resources[token]; !found {
+			delete(p.variants, key)
+		}
+	}
+}
+
 func (p *HLSProxy) Register(rawURL, referer string) (string, error) {
 	if !validUpstream(rawURL) {
 		return "", fmt.Errorf("invalid HLS upstream URL")
@@ -58,12 +77,7 @@ func (p *HLSProxy) Register(rawURL, referer string) (string, error) {
 	now := time.Now()
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	for key, resource := range p.resources {
-		if now.After(resource.ExpiresAt) {
-			delete(p.resources, key)
-			delete(p.byTarget, resource.URL+"\x00"+resource.Referer)
-		}
-	}
+	p.cleanupLocked(now)
 	if token, found := p.byTarget[targetKey]; found {
 		resource := p.resources[token]
 		resource.ExpiresAt = now.Add(p.ttl)
@@ -88,6 +102,7 @@ func (p *HLSProxy) resource(token string) (proxyResource, bool) {
 			p.mu.Lock()
 			delete(p.resources, token)
 			delete(p.byTarget, resource.URL+"\x00"+resource.Referer)
+			p.cleanupLocked(time.Now())
 			p.mu.Unlock()
 		}
 		return proxyResource{}, false
@@ -95,7 +110,11 @@ func (p *HLSProxy) resource(token string) (proxyResource, bool) {
 	return resource, true
 }
 
-var playlistURI = regexp.MustCompile(`URI=("[^"]+"|'[^']+')`)
+var (
+	playlistURI = regexp.MustCompile(`URI=("[^"]+"|'[^']+')`)
+	resolution  = regexp.MustCompile(`(?i)(?:^|,)RESOLUTION=\d+x(\d+)(?:,|$)`)
+	bandwidth   = regexp.MustCompile(`(?i)(?:^|,)BANDWIDTH=(\d+)(?:,|$)`)
+)
 
 func (p *HLSProxy) proxyURL(rawURL, referer string) (string, error) {
 	token, err := p.Register(rawURL, referer)
@@ -113,23 +132,63 @@ func resolveReference(base *url.URL, value string) (string, error) {
 	return base.ResolveReference(reference).String(), nil
 }
 
+func qualityName(streamInfo string) string {
+	if match := resolution.FindStringSubmatch(streamInfo); len(match) == 2 {
+		return match[1] + "p"
+	}
+	if match := bandwidth.FindStringSubmatch(streamInfo); len(match) == 2 {
+		// BANDWIDTH is bits per second. Keep a useful deterministic label for
+		// master playlists which do not advertise RESOLUTION.
+		var bps int64
+		_, _ = fmt.Sscan(match[1], &bps)
+		return fmt.Sprintf("%dkbps", bps/1000)
+	}
+	return "auto"
+}
+
+func (p *HLSProxy) variantURL(sessionID, quality, rawURL, referer string) (string, error) {
+	token, err := p.Register(rawURL, referer)
+	if err != nil {
+		return "", err
+	}
+	key := sessionID + "/" + quality
+	p.mu.Lock()
+	p.variants[key] = token
+	p.mu.Unlock()
+	return "/hls/" + sessionID + "/" + quality + "/index.m3u8", nil
+}
+
+// rewritePlaylist is retained as a small compatibility wrapper for callers
+// which do not have a master session ID (including media-playlist tests).
 func (p *HLSProxy) rewritePlaylist(content []byte, sourceURL, referer string) ([]byte, error) {
+	return p.rewritePlaylistForSession(content, sourceURL, referer, "")
+}
+
+func (p *HLSProxy) rewritePlaylistForSession(content []byte, sourceURL, referer, sessionID string) ([]byte, error) {
 	base, err := url.Parse(sourceURL)
 	if err != nil {
 		return nil, err
 	}
 	var output strings.Builder
+	var streamInfo string
 	scanner := bufio.NewScanner(strings.NewReader(string(content)))
 	scanner.Buffer(make([]byte, 64*1024), 2*1024*1024)
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
-		if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+		if strings.HasPrefix(trimmed, "#EXT-X-STREAM-INF:") {
+			streamInfo = strings.TrimPrefix(trimmed, "#EXT-X-STREAM-INF:")
+		} else if trimmed != "" && !strings.HasPrefix(trimmed, "#") {
 			resolved, resolveErr := resolveReference(base, trimmed)
 			if resolveErr != nil {
 				return nil, resolveErr
 			}
-			line, err = p.proxyURL(resolved, referer)
+			if sessionID != "" && streamInfo != "" {
+				line, err = p.variantURL(sessionID, qualityName(streamInfo), resolved, referer)
+			} else {
+				line, err = p.proxyURL(resolved, referer)
+			}
+			streamInfo = ""
 			if err != nil {
 				return nil, err
 			}
@@ -182,14 +241,32 @@ func isPlaylist(contentType, rawURL string, prefix []byte) bool {
 		strings.HasPrefix(strings.TrimSpace(string(prefix)), "#EXTM3U")
 }
 
+func (p *HLSProxy) route(path string) (token, sessionID string, ok bool) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(path, "/hls/"), "/"), "/")
+	switch {
+	case len(parts) == 1 && parts[0] != "":
+		return parts[0], parts[0], true // legacy /hls/{id}
+	case len(parts) == 2 && parts[0] != "" && parts[1] == "master.m3u8":
+		return parts[0], parts[0], true
+	case len(parts) == 3 && parts[0] != "" && parts[1] != "" && parts[2] == "index.m3u8":
+		key := parts[0] + "/" + parts[1]
+		p.mu.RLock()
+		token, found := p.variants[key]
+		p.mu.RUnlock()
+		return token, parts[0], found
+	default:
+		return "", "", false
+	}
+}
+
 func (p *HLSProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		w.Header().Set("Allow", "GET, HEAD")
 		writeError(w, http.StatusMethodNotAllowed, fmt.Errorf("method not allowed"))
 		return
 	}
-	token := strings.TrimPrefix(r.URL.Path, "/hls/")
-	if token == "" || strings.Contains(token, "/") {
+	token, sessionID, routed := p.route(r.URL.Path)
+	if !routed {
 		writeError(w, http.StatusNotFound, fmt.Errorf("HLS resource not found"))
 		return
 	}
@@ -249,7 +326,7 @@ func (p *HLSProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadGateway, fmt.Errorf("upstream HLS playlist is too large"))
 			return
 		}
-		rewritten, err := p.rewritePlaylist(content, resource.URL, resource.Referer)
+		rewritten, err := p.rewritePlaylistForSession(content, resource.URL, resource.Referer, sessionID)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err)
 			return

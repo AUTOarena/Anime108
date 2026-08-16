@@ -144,7 +144,7 @@ func (s *Server) resolveStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"playlist_url": "/hls/" + token,
+		"playlist_url": "/hls/" + token + "/master.m3u8",
 		"title":        metadata.Title,
 		"episode":      metadata.Episode,
 		"lang":         payload.Lang,

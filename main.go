@@ -138,13 +138,14 @@ func (s *Server) resolveStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	token, err := s.proxy.Register(streamURL, iframeURL)
+	sessionID, err := s.proxy.CreateSession(streamURL, iframeURL)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"playlist_url": "/hls/" + token,
+		"playlist_url": s.proxy.PlaylistPath(sessionID),
+		"session_id":   sessionID,
 		"title":        metadata.Title,
 		"episode":      metadata.Episode,
 		"lang":         payload.Lang,

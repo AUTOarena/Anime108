@@ -1,1 +1,6 @@
 /anime108
+/Anime108
+*.exe
+*.test
+coverage.out
+.DS_Store

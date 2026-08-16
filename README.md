@@ -54,6 +54,9 @@ go test -race ./...
 - `GET /search?q=...` — ค้นหาอนิเมะ
 - `POST /api/parse` — อ่าน metadata และรายการตอน
 - `POST /api/stream` — สร้าง HLS proxy session
-- `GET /hls/{token}` — รับ playlist/segment/key ผ่าน proxy
+- `GET /hls/{id}/playlist.m3u8` — entry playlist ของ session
+- `GET /hls/{id}/index-N.m3u8` — media playlist (variant)
+- `GET /hls/{id}/segment-N.ts` — video segment
+- `GET /hls/{id}/key-N.key`, `GET /hls/{id}/init-N.mp4` — encryption key / fMP4 init
 
 ดูรายละเอียดที่ <http://localhost:5000/docs> หรือ [api_docs.md](api_docs.md)

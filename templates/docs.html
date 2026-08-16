@@ -11,13 +11,21 @@ Content-Type: application/json
   "lang": "Sound Track"
 }</pre><p>Response:</p><pre>{
   "playlist_url": "/hls/8f2c1a9e4b7d6350/playlist.m3u8",
+  "qualities": [
+    {"label": "1080p", "path": "/hls/8f2c1a9e4b7d6350/1080p/index.m3u8", "resolution": "1920x1080"},
+    {"label": "720p",  "path": "/hls/8f2c1a9e4b7d6350/720p/index.m3u8",  "resolution": "1280x720"}
+  ],
   "session_id": "8f2c1a9e4b7d6350",
   "title": "Mushen Ji",
   "episode": 2,
   "lang": "Sound Track",
   "expires_in": 7200
 }</pre></section>
-<section class="card"><h2><span class="method get">GET</span>/hls/{id}/{file}</h2><p>ทุก resource ของ session อยู่ใต้ <code>/hls/{id}/</code> และมีนามสกุลไฟล์จริง ทำให้ player, CDN และ <code>Content-Type</code> ทำงานถูกต้อง Server จะ rewrite URI ภายใน playlist ให้เป็นชื่อไฟล์ relative ของ session เดียวกันอัตโนมัติ</p><pre>GET /hls/{id}/playlist.m3u8   # entry playlist
+<section class="card"><h2><span class="method get">GET</span>/hls/{id}/{&#3588;&#3623;&#3634;&#3617;&#3594;&#3633;&#3604;}/index.m3u8</h2><p>&#3648;&#3621;&#3639;&#3629;&#3585;&#3588;&#3623;&#3634;&#3617;&#3594;&#3633;&#3604;&#3652;&#3604;&#3657;&#3648;&#3629;&#3591; &#3651;&#3594;&#3657;&#3588;&#3656;&#3634; <code>label</code> &#3592;&#3634;&#3585; <code>qualities</code></p><pre>GET /hls/{id}/1080p/index.m3u8   # &#3621;&#3655;&#3629;&#3585;&#3607;&#3637;&#3656; 1080p
+GET /hls/{id}/720p/index.m3u8    # &#3621;&#3655;&#3629;&#3585;&#3607;&#3637;&#3656; 720p
+GET /hls/{id}/auto/index.m3u8    # master playlist (&#3611;&#3619;&#3633;&#3610;&#3629;&#3633;&#3605;&#3650;&#3609;&#3617;&#3633;&#3605;&#3636;)
+GET /hls/{id}/qualities.json     # &#3619;&#3634;&#3618;&#3585;&#3634;&#3619;&#3588;&#3623;&#3634;&#3617;&#3594;&#3633;&#3604;</pre><p class="muted"><code>playlist_url</code> &#3648;&#3611;&#3655;&#3609; master playlist &#3607;&#3637;&#3656;&#3619;&#3623;&#3617;&#3607;&#3640;&#3585;&#3588;&#3623;&#3634;&#3617;&#3594;&#3633;&#3604; &#3592;&#3638;&#3591;&#3611;&#3619;&#3633;&#3610;&#3629;&#3633;&#3605;&#3650;&#3609;&#3617;&#3633;&#3605;&#3636;&#3652;&#3604;&#3657; &#183; <code>404</code> &#3648;&#3617;&#3639;&#3656;&#3629;&#3652;&#3617;&#3656;&#3617;&#3637;&#3588;&#3623;&#3634;&#3617;&#3594;&#3633;&#3604;&#3609;&#3633;&#3657;&#3609;</p></section>
+<section class="card"><h2><span class="method get">GET</span>/hls/{id}/{file}</h2><p>ทุก resource ของ session อยู่ใต้ <code>/hls/{id}/</code> และมีนามสกุลไฟล์จริง ทำให้ player, CDN และ <code>Content-Type</code> ทำงานถูกต้อง Server จะ rewrite URI ภายใน playlist ให้เป็นชื่อไฟล์ relative ของ session เดียวกันอัตโนมัติ</p><pre>GET /hls/{id}/playlist.m3u8   # master playlist (&#3607;&#3640;&#3585;&#3588;&#3623;&#3634;&#3617;&#3594;&#3633;&#3604;)
 GET /hls/{id}/index-1.m3u8    # media playlist ของแต่ละ variant
 GET /hls/{id}/segment-12.ts   # video segment
 GET /hls/{id}/key-3.key       # AES-128 key

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -35,7 +36,7 @@ https://cdn.example/low/index.m3u8
 	if strings.Contains(output, "video.example") || strings.Contains(output, "cdn.example") {
 		t.Fatalf("upstream URL leaked into playlist: %s", output)
 	}
-	for _, want := range []string{`URI="key-1.key"`, `URI="init-2.mp4"`, "segment-3.ts", "index-4.m3u8"} {
+	for _, want := range []string{`URI="key-1.key"`, `URI="init-2.mp4"`, "segment-3.ts", "800k/" + variantPlaylistName} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("expected %q in rewritten playlist: %s", want, output)
 		}
@@ -235,5 +236,161 @@ func TestCreateSessionReusesExistingSession(t *testing.T) {
 	}
 	if len(proxy.sessions) != 1 {
 		t.Fatalf("expected 1 session, got %d", len(proxy.sessions))
+	}
+}
+
+func TestQualityPathsServeEachVariant(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		switch r.URL.Path {
+		case "/1080.m3u8":
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXTINF:5,\nhd.ts\n")
+		case "/480.m3u8":
+			_, _ = io.WriteString(w, "#EXTM3U\n#EXTINF:5,\nsd.ts\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer upstream.Close()
+
+	proxy := NewHLSProxy(time.Hour)
+	id, err := proxy.CreateSessionWithVariants(upstream.URL+"/master.m3u8", "", []VariantSource{
+		{Label: "1080p", Resolution: "1920x1080", Height: 1080, Bandwidth: 5000000, URL: upstream.URL + "/1080.m3u8"},
+		{Label: "480p", Resolution: "854x480", Height: 480, Bandwidth: 1200000, URL: upstream.URL + "/480.m3u8"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	master := httptest.NewRecorder()
+	proxy.ServeHTTP(master, httptest.NewRequest(http.MethodGet, proxy.PlaylistPath(id), nil))
+	if master.Code != http.StatusOK {
+		t.Fatalf("master status %d: %s", master.Code, master.Body.String())
+	}
+	body := master.Body.String()
+	for _, want := range []string{"1080p/index.m3u8", "480p/index.m3u8", "RESOLUTION=1920x1080", "BANDWIDTH=5000000"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("expected %q in master playlist:\n%s", want, body)
+		}
+	}
+	if strings.Index(body, "1080p/") > strings.Index(body, "480p/") {
+		t.Fatalf("variants must be ordered best first:\n%s", body)
+	}
+
+	for label, segment := range map[string]string{"1080p": "hd.ts", "480p": "sd.ts"} {
+		response := httptest.NewRecorder()
+		proxy.ServeHTTP(response, httptest.NewRequest(http.MethodGet, proxy.VariantPath(id, label), nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status %d: %s", label, response.Code, response.Body.String())
+		}
+		if strings.Contains(response.Body.String(), segment) {
+			t.Fatalf("%s: upstream segment name must be rewritten:\n%s", label, response.Body.String())
+		}
+		// nested playlists must escape the quality directory
+		if !strings.Contains(response.Body.String(), "../segment-") {
+			t.Fatalf("%s: nested playlist must use ../ prefixed names:\n%s", label, response.Body.String())
+		}
+	}
+
+	missing := httptest.NewRecorder()
+	proxy.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, proxy.VariantPath(id, "2160p"), nil))
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("unknown quality must be 404, got %d", missing.Code)
+	}
+}
+
+func TestQualityListEndpoint(t *testing.T) {
+	proxy := NewHLSProxy(time.Hour)
+	id, err := proxy.CreateSessionWithVariants("https://video.example/master.m3u8", "", []VariantSource{
+		{Label: "720p", Height: 720, URL: "https://video.example/720.m3u8"},
+		{Label: "1080p", Height: 1080, URL: "https://video.example/1080.m3u8"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/hls/"+id+"/"+qualityListName, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("quality list status %d", response.Code)
+	}
+	var payload struct {
+		Qualities []Variant `json:"qualities"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload.Qualities) != 2 || payload.Qualities[0].Label != "1080p" {
+		t.Fatalf("unexpected quality list: %+v", payload.Qualities)
+	}
+	if payload.Qualities[0].Path != "1080p/"+variantPlaylistName {
+		t.Fatalf("unexpected variant path %q", payload.Qualities[0].Path)
+	}
+}
+
+func TestAutoQualityServesMasterPlaylist(t *testing.T) {
+	proxy := NewHLSProxy(time.Hour)
+	id, _ := proxy.CreateSessionWithVariants("https://video.example/master.m3u8", "", []VariantSource{
+		{Label: "720p", Height: 720, URL: "https://video.example/720.m3u8"},
+	})
+	response := httptest.NewRecorder()
+	proxy.ServeHTTP(response, httptest.NewRequest(http.MethodGet, proxy.VariantPath(id, autoQuality), nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("auto quality status %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "../720p/"+variantPlaylistName) {
+		t.Fatalf("auto master must point back at the session root:\n%s", response.Body.String())
+	}
+}
+
+func TestDuplicateQualityLabelsStayUnique(t *testing.T) {
+	proxy := NewHLSProxy(time.Hour)
+	id, err := proxy.CreateSessionWithVariants("https://video.example/master.m3u8", "", []VariantSource{
+		{Label: "720p", Height: 720, Bandwidth: 2000000, URL: "https://video.example/a.m3u8"},
+		{Label: "720p", Height: 720, Bandwidth: 1000000, URL: "https://video.example/b.m3u8"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	labels := map[string]bool{}
+	for _, variant := range proxy.Qualities(id) {
+		if labels[variant.Label] {
+			t.Fatalf("duplicate label %q", variant.Label)
+		}
+		labels[variant.Label] = true
+	}
+	if len(labels) != 2 {
+		t.Fatalf("expected 2 distinct labels, got %v", labels)
+	}
+}
+
+func TestParseMasterPlaylistVariants(t *testing.T) {
+	playlist := `#EXTM3U
+#EXT-X-STREAM-INF:BANDWIDTH=1200000,RESOLUTION=854x480
+480/index.m3u8
+#EXT-X-STREAM-INF:BANDWIDTH=5000000,RESOLUTION=1920x1080
+https://cdn.example/1080/index.m3u8
+`
+	variants, err := parseMasterPlaylist(playlist, "https://video.example/path/master.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(variants) != 2 {
+		t.Fatalf("expected 2 variants, got %+v", variants)
+	}
+	if variants[0].Label != "1080p" || variants[1].Label != "480p" {
+		t.Fatalf("variants must be sorted best first: %+v", variants)
+	}
+	if variants[1].URL != "https://video.example/path/480/index.m3u8" {
+		t.Fatalf("relative variant not resolved: %q", variants[1].URL)
+	}
+}
+
+func TestParseMasterPlaylistMediaOnly(t *testing.T) {
+	variants, err := parseMasterPlaylist("#EXTM3U\n#EXTINF:5,\nsegment.ts\n", "https://video.example/index.m3u8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(variants) != 1 || variants[0].Label != autoQuality {
+		t.Fatalf("media playlist must yield a single auto variant: %+v", variants)
 	}
 }

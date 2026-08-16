@@ -205,7 +205,32 @@ func (s *Scraper) GetPlayerIframe(ctx context.Context, postID, episode, server i
 	return match[1], nil
 }
 
-type streamVariant struct{ resolution, path string }
+// StreamVariant is one quality level advertised by the upstream master
+// playlist.
+type StreamVariant struct {
+	Label      string `json:"label"`
+	Resolution string `json:"resolution,omitempty"`
+	Width      int    `json:"width,omitempty"`
+	Height     int    `json:"height,omitempty"`
+	Bandwidth  int    `json:"bandwidth,omitempty"`
+	URL        string `json:"-"`
+}
+
+// StreamInfo is everything needed to build a multi quality proxy session.
+type StreamInfo struct {
+	MasterURL string
+	Referer   string
+	Variants  []StreamVariant
+}
+
+// Best returns the highest quality variant, or an empty variant when none were
+// found.
+func (info StreamInfo) Best() StreamVariant {
+	if len(info.Variants) == 0 {
+		return StreamVariant{}
+	}
+	return info.Variants[0]
+}
 
 func (s *Scraper) fetchText(ctx context.Context, target, referer, origin string) (string, int, error) {
 	resp, err := s.request(ctx, http.MethodGet, target, nil, map[string]string{"Referer": referer, "Origin": origin})
@@ -217,14 +242,91 @@ func (s *Scraper) fetchText(ctx context.Context, target, referer, origin string)
 	return string(data), resp.StatusCode, readErr
 }
 
-func (s *Scraper) ResolveStreamURL(ctx context.Context, iframeURL string) (string, error) {
+var (
+	streamResolutionRE = regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
+	streamBandwidthRE  = regexp.MustCompile(`BANDWIDTH=(\d+)`)
+	streamNameRE       = regexp.MustCompile(`NAME="([^"]+)"`)
+)
+
+// parseMasterPlaylist extracts every variant of a master playlist, sorted from
+// the highest quality to the lowest. A media playlist (no #EXT-X-STREAM-INF)
+// yields a single "auto" variant pointing at the playlist itself.
+func parseMasterPlaylist(playlist, masterURL string) ([]StreamVariant, error) {
+	base, err := url.Parse(masterURL)
+	if err != nil {
+		return nil, err
+	}
+	var variants []StreamVariant
+	pending := StreamVariant{}
+	hasPending := false
+	for _, raw := range strings.Split(playlist, "\n") {
+		line := strings.TrimSpace(raw)
+		if strings.HasPrefix(line, "#EXT-X-STREAM-INF") {
+			pending = StreamVariant{}
+			hasPending = true
+			if match := streamResolutionRE.FindStringSubmatch(line); len(match) > 2 {
+				pending.Width, _ = strconv.Atoi(match[1])
+				pending.Height, _ = strconv.Atoi(match[2])
+				pending.Resolution = match[1] + "x" + match[2]
+			}
+			if match := streamBandwidthRE.FindStringSubmatch(line); len(match) > 1 {
+				pending.Bandwidth, _ = strconv.Atoi(match[1])
+			}
+			if match := streamNameRE.FindStringSubmatch(line); len(match) > 1 {
+				pending.Label = match[1]
+			}
+			continue
+		}
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		reference, err := url.Parse(line)
+		if err != nil {
+			continue
+		}
+		variant := pending
+		variant.URL = base.ResolveReference(reference).String()
+		if variant.Label == "" {
+			switch {
+			case variant.Height > 0:
+				variant.Label = strconv.Itoa(variant.Height) + "p"
+			case variant.Bandwidth > 0:
+				variant.Label = strconv.Itoa(variant.Bandwidth/1000) + "k"
+			default:
+				variant.Label = "auto"
+			}
+		}
+		if !hasPending && len(variants) == 0 {
+			// media playlist served directly, no quality levels advertised
+			variant.Label = "auto"
+		}
+		variants = append(variants, variant)
+		pending = StreamVariant{}
+		hasPending = false
+	}
+	if len(variants) == 0 {
+		return nil, errors.New("no streams found in master playlist")
+	}
+	sort.SliceStable(variants, func(i, j int) bool {
+		if variants[i].Height != variants[j].Height {
+			return variants[i].Height > variants[j].Height
+		}
+		return variants[i].Bandwidth > variants[j].Bandwidth
+	})
+	return variants, nil
+}
+
+// ResolveStreamVariants returns every quality level of an episode so the caller
+// can expose a quality picker instead of hard coding the highest one.
+func (s *Scraper) ResolveStreamVariants(ctx context.Context, iframeURL string) (StreamInfo, error) {
+	info := StreamInfo{Referer: iframeURL}
 	parsed, err := url.Parse(iframeURL)
 	if err != nil {
-		return "", err
+		return info, err
 	}
 	videoID := parsed.Query().Get("id")
 	if videoID == "" {
-		return "", fmt.Errorf("no video ID found in iframe URL: %s", iframeURL)
+		return info, fmt.Errorf("no video ID found in iframe URL: %s", iframeURL)
 	}
 	playerDomain := parsed.Scheme + "://" + parsed.Host
 	masterURL := fmt.Sprintf("%s/newplaylist/%s/%s.m3u8", playerDomain, videoID, videoID)
@@ -234,53 +336,54 @@ func (s *Scraper) ResolveStreamURL(ctx context.Context, iframeURL string) (strin
 		playlist, status, err = s.fetchText(ctx, masterURL, iframeURL, playerDomain)
 	}
 	if err != nil {
-		return "", err
+		return info, err
 	}
 	if status != http.StatusOK {
-		return "", fmt.Errorf("master playlist returned HTTP %d", status)
+		return info, fmt.Errorf("master playlist returned HTTP %d", status)
 	}
-	resolutionRE := regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
-	var variants []streamVariant
-	current := "Unknown"
-	for _, raw := range strings.Split(playlist, "\n") {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "#EXT-X-STREAM-INF") {
-			if match := resolutionRE.FindStringSubmatch(line); len(match) > 2 {
-				current = match[1] + "x" + match[2]
+	variants, err := parseMasterPlaylist(playlist, masterURL)
+	if err != nil {
+		return info, err
+	}
+	info.MasterURL = masterURL
+
+	// Some CDNs advertise "m3u8_g" variants that answer with an error body;
+	// probe each level and fall back to its plain twin so that every quality
+	// we expose is actually playable.
+	usable := make([]StreamVariant, 0, len(variants))
+	var lastStatus int
+	for _, variant := range variants {
+		content, code, fetchErr := s.fetchText(ctx, variant.URL, iframeURL, playerDomain)
+		lastStatus = code
+		if fetchErr == nil && code == http.StatusOK && !strings.Contains(content, "Error") {
+			usable = append(usable, variant)
+			continue
+		}
+		if strings.Contains(variant.URL, "m3u8_g") {
+			alternate := strings.Replace(variant.URL, "m3u8_g", "m3u8", 1)
+			content, code, fetchErr = s.fetchText(ctx, alternate, iframeURL, playerDomain)
+			lastStatus = code
+			if fetchErr == nil && code == http.StatusOK && !strings.Contains(content, "Error") {
+				variant.URL = alternate
+				usable = append(usable, variant)
 			}
-		} else if line != "" && !strings.HasPrefix(line, "#") {
-			variants = append(variants, streamVariant{current, line})
-			current = "Unknown"
 		}
 	}
-	if len(variants) == 0 {
-		return "", errors.New("no streams found in master playlist")
+	if len(usable) == 0 {
+		return info, fmt.Errorf("failed to fetch a valid stream playlist: HTTP %d", lastStatus)
 	}
-	sort.SliceStable(variants, func(i, j int) bool {
-		width := func(value string) int { n, _ := strconv.Atoi(strings.Split(value, "x")[0]); return n }
-		return width(variants[i].resolution) > width(variants[j].resolution)
-	})
-	candidate, err := url.Parse(variants[0].path)
+	info.Variants = usable
+	return info, nil
+}
+
+// ResolveStreamURL keeps the single best quality behaviour for callers that do
+// not need a quality picker.
+func (s *Scraper) ResolveStreamURL(ctx context.Context, iframeURL string) (string, error) {
+	info, err := s.ResolveStreamVariants(ctx, iframeURL)
 	if err != nil {
 		return "", err
 	}
-	masterBase, err := url.Parse(masterURL)
-	if err != nil {
-		return "", err
-	}
-	streamURL := masterBase.ResolveReference(candidate).String()
-	content, status, err := s.fetchText(ctx, streamURL, iframeURL, playerDomain)
-	if err == nil && status == http.StatusOK && !strings.Contains(content, "Error") {
-		return streamURL, nil
-	}
-	if strings.Contains(streamURL, "m3u8_g") {
-		alternate := strings.Replace(streamURL, "m3u8_g", "m3u8", 1)
-		content, status, err = s.fetchText(ctx, alternate, iframeURL, playerDomain)
-		if err == nil && status == http.StatusOK && !strings.Contains(content, "Error") {
-			return alternate, nil
-		}
-	}
-	return "", fmt.Errorf("failed to fetch a valid stream playlist: HTTP %d", status)
+	return info.Best().URL, nil
 }
 
 func balancedDivBlocks(document, className string) []string {

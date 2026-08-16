@@ -8,6 +8,7 @@ HLS streaming proxy สำหรับ Anime108 เขียนด้วย Go �
 - Resolve upstream HLS stream
 - Proxy playlist, video segments, encryption keys และ HLS resources
 - Rewrite URI ภายใน M3U8 ให้ผ่าน proxy อัตโนมัติ
+- เลือกความชัดได้เอง (`/hls/{id}/1080p/index.m3u8`) หรือปล่อยให้ player ปรับอัตโนมัติ
 - ใช้ opaque token จึงไม่เปิดเผย upstream URL กับ client
 - Session หมดอายุอัตโนมัติภายใน 2 ชั่วโมง
 - รองรับ HTTP Range สำหรับ video segments
@@ -54,8 +55,10 @@ go test -race ./...
 - `GET /search?q=...` — ค้นหาอนิเมะ
 - `POST /api/parse` — อ่าน metadata และรายการตอน
 - `POST /api/stream` — สร้าง HLS proxy session
-- `GET /hls/{id}/playlist.m3u8` — entry playlist ของ session
-- `GET /hls/{id}/index-N.m3u8` — media playlist (variant)
+- `GET /hls/{id}/playlist.m3u8` — master playlist ของ session (รวมทุกความชัด)
+- `GET /hls/{id}/{ความชัด}/index.m3u8` — media playlist ของความชัดที่เลือก เช่น `1080p`, `720p`, `auto`
+- `GET /hls/{id}/qualities.json` — รายการความชัดที่เลือกได้
+- `GET /hls/{id}/index-N.m3u8` — media playlist ภายใน (ชื่อ opaque)
 - `GET /hls/{id}/segment-N.ts` — video segment
 - `GET /hls/{id}/key-N.key`, `GET /hls/{id}/init-N.mp4` — encryption key / fMP4 init
 

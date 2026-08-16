@@ -1,6 +1,10 @@
 package main
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -54,6 +58,28 @@ func TestParseShowPageFallbacks(t *testing.T) {
 	}
 	if metadata.Episodes["Thai"] == nil || metadata.Episodes["Sound Track"] == nil {
 		t.Fatal("episode arrays must not be nil")
+	}
+}
+
+func TestResolveStreamURLKeepsMasterPlaylist(t *testing.T) {
+	const videoID = "video-123"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/newplaylist/"+videoID+"/"+videoID+".m3u8" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
+		_, _ = fmt.Fprint(w, "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000,RESOLUTION=640x360\n360/index.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=2500000,RESOLUTION=1280x720\n720/index.m3u8\n")
+	}))
+	defer server.Close()
+
+	got, err := NewScraper().ResolveStreamURL(context.Background(), server.URL+"/player?id="+videoID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := server.URL + "/newplaylist/" + videoID + "/" + videoID + ".m3u8"
+	if got != want {
+		t.Fatalf("expected master playlist %q, got %q", want, got)
 	}
 }
 

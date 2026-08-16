@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -204,8 +203,6 @@ func (s *Scraper) GetPlayerIframe(ctx context.Context, postID, episode, server i
 	return match[1], nil
 }
 
-type streamVariant struct{ resolution, path string }
-
 func (s *Scraper) fetchText(ctx context.Context, target, referer, origin string) (string, int, error) {
 	resp, err := s.request(ctx, http.MethodGet, target, nil, map[string]string{"Referer": referer, "Origin": origin})
 	if err != nil {
@@ -238,48 +235,21 @@ func (s *Scraper) ResolveStreamURL(ctx context.Context, iframeURL string) (strin
 	if status != http.StatusOK {
 		return "", fmt.Errorf("master playlist returned HTTP %d", status)
 	}
-	resolutionRE := regexp.MustCompile(`RESOLUTION=(\d+)x(\d+)`)
-	var variants []streamVariant
-	current := "Unknown"
+	// Return the master playlist rather than selecting the largest variant here.
+	// Keeping #EXT-X-STREAM-INF entries lets hls.js/native HLS switch quality
+	// automatically and exposes each rendition through the readable proxy path
+	// /hls/{id}/{quality}/index.m3u8.
+	hasStream := false
 	for _, raw := range strings.Split(playlist, "\n") {
-		line := strings.TrimSpace(raw)
-		if strings.HasPrefix(line, "#EXT-X-STREAM-INF") {
-			if match := resolutionRE.FindStringSubmatch(line); len(match) > 2 {
-				current = match[1] + "x" + match[2]
-			}
-		} else if line != "" && !strings.HasPrefix(line, "#") {
-			variants = append(variants, streamVariant{current, line})
-			current = "Unknown"
+		if strings.HasPrefix(strings.TrimSpace(raw), "#EXT-X-STREAM-INF:") {
+			hasStream = true
+			break
 		}
 	}
-	if len(variants) == 0 {
-		return "", errors.New("no streams found in master playlist")
+	if !hasStream {
+		return "", fmt.Errorf("no streams found in master playlist")
 	}
-	sort.SliceStable(variants, func(i, j int) bool {
-		width := func(value string) int { n, _ := strconv.Atoi(strings.Split(value, "x")[0]); return n }
-		return width(variants[i].resolution) > width(variants[j].resolution)
-	})
-	candidate, err := url.Parse(variants[0].path)
-	if err != nil {
-		return "", err
-	}
-	masterBase, err := url.Parse(masterURL)
-	if err != nil {
-		return "", err
-	}
-	streamURL := masterBase.ResolveReference(candidate).String()
-	content, status, err := s.fetchText(ctx, streamURL, iframeURL, playerDomain)
-	if err == nil && status == http.StatusOK && !strings.Contains(content, "Error") {
-		return streamURL, nil
-	}
-	if strings.Contains(streamURL, "m3u8_g") {
-		alternate := strings.Replace(streamURL, "m3u8_g", "m3u8", 1)
-		content, status, err = s.fetchText(ctx, alternate, iframeURL, playerDomain)
-		if err == nil && status == http.StatusOK && !strings.Contains(content, "Error") {
-			return alternate, nil
-		}
-	}
-	return "", fmt.Errorf("failed to fetch a valid stream playlist: HTTP %d", status)
+	return masterURL, nil
 }
 
 func balancedDivBlocks(document, className string) []string {

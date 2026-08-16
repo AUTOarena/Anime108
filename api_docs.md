@@ -41,7 +41,7 @@ Response:
 
 ```json
 {
-  "playlist_url": "/hls/temporary-token",
+  "playlist_url": "/hls/temporary-token/master.m3u8",
   "title": "Mushen Ji",
   "episode": 2,
   "lang": "Sound Track",
@@ -52,13 +52,14 @@ Response:
 ## Stream a proxied HLS resource
 
 ```http
-GET /hls/{token}
+GET /hls/{id}/master.m3u8
+GET /hls/{id}/{quality}/index.m3u8
 Range: bytes=0-1048575
 ```
 
-`playlist_url` และ URI ที่ถูก rewrite ภายใน playlist ใช้ endpoint นี้ทั้งหมด Proxy รองรับ:
+`playlist_url` เป็น master playlist ที่เก็บทุกความชัดไว้ เช่น URI ภายในจะถูก rewrite เป็น `/hls/{id}/720p/index.m3u8` และ `/hls/{id}/1080p/index.m3u8` ทำให้ HLS player เลือกหรือสลับความชัดได้ ส่วน URI ของ segment/key จะใช้ opaque token ผ่าน `/hls/{token}` โดยอัตโนมัติ Proxy รองรับ:
 
-- Master และ media playlists
+- Master playlist แบบ adaptive bitrate และ media playlists
 - MPEG-TS/fMP4 segments
 - `EXT-X-KEY` และ URI attributes
 - Relative และ absolute upstream URLs
